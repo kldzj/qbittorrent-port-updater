@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -34,6 +35,9 @@ type Config struct {
 
 	// QBittorrrentPassword is the password to use when authenticating with the QBittorrent API
 	QBittorrentPassword string `env:"QBITTORRENT_PASSWORD"`
+
+	// AllowPortFileNotExist controls whether or not the port PortFile can not exist, if false and the PortFile does not exist then the program will error
+	AllowPortFileNotExist bool `env:"ALLOW_PORT_FILE_NOT_EXIST" envDefault:"true"`
 }
 
 // LoadConfig from environment vars
@@ -237,6 +241,9 @@ type PortSyncer struct {
 	// qBittorrentPassword is the password used to authenticate with the qBittorrent API
 	qBittorrentPassword string
 
+	// allowPortFileNotExist indicates if the PortFile can not exist without an error being thrown
+	allowPortFileNotExist bool
+
 	// portFile is the file which contains the VPNs forwarded port
 	portFile string
 }
@@ -255,6 +262,9 @@ type NewPortSyncerOptions struct {
 	// QBittorrentPassword is the password used to authenticate with the qBittorrent API
 	QBittorrentPassword string
 
+	// AllowPortFileNotExist indicates if the PortFile can not exist without an error being thrown
+	AllowPortFileNotExist bool
+
 	// PortFile is the file which contains the VPNs forwarded port
 	PortFile string
 }
@@ -262,10 +272,11 @@ type NewPortSyncerOptions struct {
 // NewPortSyncer creates a new PortSyncer
 func NewPortSyncer(opts NewPortSyncerOptions) *PortSyncer {
 	return &PortSyncer{
-		qBittorrentClient:   opts.QBittorrentClient,
-		qBittorrentUsername: opts.QBittorrentUsername,
-		qBittorrentPassword: opts.QBittorrentPassword,
-		portFile:            opts.PortFile,
+		qBittorrentClient:     opts.QBittorrentClient,
+		qBittorrentUsername:   opts.QBittorrentUsername,
+		qBittorrentPassword:   opts.QBittorrentPassword,
+		allowPortFileNotExist: opts.AllowPortFileNotExist,
+		portFile:              opts.PortFile,
 	}
 }
 
@@ -309,6 +320,15 @@ func (syncer *PortSyncer) ReconcileTorrentPort(ctx context.Context, port uint16)
 // Sync reads the port file and ensures qBittorrent is using that port for torrents
 // Returns a boolean indicating if the qBittorrent port had to be changed
 func (syncer *PortSyncer) Sync(ctx context.Context) (bool, error) {
+	if _, err := os.Stat(syncer.portFile); errors.Is(err, os.ErrNotExist) {
+		if syncer.allowPortFileNotExist {
+			syncer.logger.Printf("port file '%s' does not exist yet, skipping sync...", syncer.portFile)
+			return false, nil
+		}
+
+		return false, fmt.Errorf("port file '%s' does not exist", syncer.portFile)
+	}
+
 	port, err := syncer.GetPortFileValue()
 	if err != nil {
 		return false, fmt.Errorf("failed to get desired port from port file: %s", err)
