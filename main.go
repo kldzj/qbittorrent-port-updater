@@ -54,17 +54,35 @@ func LoadConfig() (*Config, error) {
 
 // QBittorrentClient is an API client for qBittorrent
 type QBittorrentClient struct {
+	// logger is used to output information
+	logger *log.Logger
+
 	// baseURL is the location of the qBittorrent API location
 	baseURL url.URL
 
 	// httpClient used to make API requests, stores auth cookies
 	httpClient *http.Client
+
+	// username to login with
+	username string
+
+	// password to login with
+	password string
 }
 
 // NewQBittorrentClientOptions are options for creating a new QBittorrentClient
 type NewQBittorrentClientOptions struct {
+	// Logger is used to output information
+	Logger *log.Logger
+
 	// NetworkLocation is the location of the qBittorrent server
 	NetworkLocation string
+
+	// Username to login with
+	Username string
+
+	// Password to login with
+	Password string
 }
 
 // NewQBittorrentClient creates a new QBittorrentClient
@@ -86,18 +104,12 @@ func NewQBittorrentClient(opts NewQBittorrentClientOptions) (*QBittorrentClient,
 	}
 
 	return &QBittorrentClient{
+		logger:     opts.Logger,
 		baseURL:    *baseURL,
 		httpClient: httpClient,
+		username:   opts.Username,
+		password:   opts.Password,
 	}, nil
-}
-
-// baseHeaders returns the headers required for each request
-func (client *QBittorrentClient) baseHeaders() map[string][]string {
-	return map[string][]string{
-		"Referer": {
-			client.baseURL.String(),
-		},
-	}
 }
 
 // QBittorrentLoginNotAuthorizedError occurs when a qBittorrent API login request fails because credentials were not accepted by the server
@@ -110,38 +122,84 @@ func (e QBittorrentLoginNotAuthorizedError) Error() string {
 	return e.err
 }
 
-// Login authenticates with the API, must be called for each client in order for later API calls to work
-// https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-4.1)#login
-// Returns QBittorrentLoginNotAuthorizedError if the credentials were not accepted
-func (client *QBittorrentClient) Login(ctx context.Context, username string, password string) error {
-	// Setup request
-	reqURL := client.baseURL
-	reqURL.Path += "/api/v2/auth/login"
+// QBittorrentUnauthorizedError indicates the API client is not logged in
+type QBittorrentUnauthorizedError struct{}
 
-	reqBody := io.NopCloser(strings.NewReader(fmt.Sprintf("username=%s&password=%s", username, password)))
+// Error returns a string representation
+func (e QBittorrentUnauthorizedError) Error() string {
+	return "not authorized"
+}
 
-	req := http.Request{
-		Method: "GET",
-		URL:    &reqURL,
-		Body:   reqBody,
-		Header: client.baseHeaders(),
-	}
+// doReq sends the provided request, if autoLogin is true also tries to automatically login if the server indicates we are not logged in.
+// Returns (response, response body, error)
+func (client *QBittorrentClient) doReq(ctx context.Context, req *http.Request, autoLogin bool) (*http.Response, []byte, error) {
+	req.Header.Add("Referer", client.baseURL.String())
 
-	// Do request
 	resp, err := client.httpClient.Do(req.WithContext(ctx))
 	if err != nil {
-		return fmt.Errorf("failed to make HTTP request: %s", err)
+		return nil, nil, fmt.Errorf("failed to make request: %s", err)
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %s", err)
+		return resp, nil, fmt.Errorf("failed to read response body: %s", err)
+	}
+
+	if resp.StatusCode == http.StatusForbidden {
+		// Try to automatically login and then repeat request
+		if autoLogin {
+			client.logger.Println("automatically logging in")
+			if err := client.Login(ctx); err != nil {
+				return resp, nil, fmt.Errorf("failed to login: %s", err)
+			}
+
+			return client.doReq(ctx, req, false)
+		}
+
+		return resp, respBody, QBittorrentUnauthorizedError{}
+	} else if resp.StatusCode != http.StatusOK {
+		return resp, respBody, fmt.Errorf("non-OK status code %d - %s: '%s'", resp.StatusCode, resp.Status, respBody)
+	}
+
+	return resp, respBody, nil
+}
+
+// Login authenticates with the API, must be called for each client in order for later API calls to work
+// https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-4.1)#login
+// Returns QBittorrentLoginNotAuthorizedError if the credentials were not accepted
+func (client *QBittorrentClient) Login(ctx context.Context) error {
+	// Setup request
+	reqURL := client.baseURL
+	reqURL.Path += "/api/v2/auth/login"
+
+	reqBodyValues := url.Values{}
+	reqBodyValues.Set("username", client.username)
+	reqBodyValues.Set("password", client.password)
+	//reqBody := io.NopCloser(strings.NewReader(reqBodyValues.Encode()))
+
+	req, err := http.NewRequest("POST", reqURL.String(), nil)
+	if err != nil {
+		return fmt.Errorf("failed to craft HTTP request: %s", err)
+	}
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	req.PostForm = reqBodyValues
+
+	// Do request
+	resp, respBody, err := client.doReq(ctx, req, false)
+	if err != nil {
+		return err
 	}
 	if resp.StatusCode == 403 {
 		return QBittorrentLoginNotAuthorizedError{fmt.Sprintf("not authorized: '%s'", respBody)}
-	} else if resp.StatusCode != 200 {
-		return fmt.Errorf("failed to login, status code=%d, body='%s'", resp.StatusCode, respBody)
 	}
+
+	cookies := resp.Cookies()
+
+	if len(cookies) == 0 {
+		return fmt.Errorf("received no authentication cookie in response from the server")
+	}
+
+	client.httpClient.Jar.SetCookies(&client.baseURL, cookies)
 
 	// Authentication cookie should now be in jar
 	return nil
@@ -166,26 +224,15 @@ func (client *QBittorrentClient) SetServerPreferences(ctx context.Context, prefs
 	}
 	reqBody := io.NopCloser(strings.NewReader(fmt.Sprintf("json=%s", reqBodyBytes)))
 
-	req := http.Request{
-		Method: "POST",
-		URL:    &reqURL,
-		Body:   reqBody,
-		Header: client.baseHeaders(),
+	req, err := http.NewRequest("POST", reqURL.String(), reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to craft HTTP request: %s", err)
 	}
 
 	// Do request
-	resp, err := client.httpClient.Do(req.WithContext(ctx))
+	_, _, err = client.doReq(ctx, req, true)
 	if err != nil {
-		return fmt.Errorf("failed to make HTTP request: %s", err)
-	}
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %s", err)
-	}
-
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("failed to set server preferences: status code=%d, body='%s'", resp.StatusCode, respBody)
+		return err
 	}
 
 	return nil
@@ -198,25 +245,15 @@ func (client *QBittorrentClient) GetServerPreferences(ctx context.Context) (*QBi
 	reqURL := client.baseURL
 	reqURL.Path += "/api/v2/app/preferences"
 
-	req := http.Request{
-		Method: "GET",
-		URL:    &reqURL,
-		Header: client.baseHeaders(),
+	req, err := http.NewRequest("GET", reqURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to craft HTTP request: %s", err)
 	}
 
 	// Do request
-	resp, err := client.httpClient.Do(req.WithContext(ctx))
+	_, respBody, err := client.doReq(ctx, req, true)
 	if err != nil {
-		return nil, fmt.Errorf("failed to make HTTP request: %s", err)
-	}
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %s", err)
-	}
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("failed to get server preferences: status code=%d, body='%s'", resp.StatusCode, respBody)
+		return nil, err
 	}
 
 	var prefs QBittorrentServerPreferences
@@ -235,12 +272,6 @@ type PortSyncer struct {
 	// qBittorrentClient is the API client used to make qBittorrent API requests
 	qBittorrentClient *QBittorrentClient
 
-	// qBittorrentUsername is the username used to authenticate with the qBittorrent API
-	qBittorrentUsername string
-
-	// qBittorrentPassword is the password used to authenticate with the qBittorrent API
-	qBittorrentPassword string
-
 	// allowPortFileNotExist indicates if the PortFile can not exist without an error being thrown
 	allowPortFileNotExist bool
 
@@ -256,12 +287,6 @@ type NewPortSyncerOptions struct {
 	// QBittorrentClient is the API client used to make qBittorrent API requests
 	QBittorrentClient *QBittorrentClient
 
-	// QBittorrentUsername is the username used to authenticate with the qBittorrent API
-	QBittorrentUsername string
-
-	// QBittorrentPassword is the password used to authenticate with the qBittorrent API
-	QBittorrentPassword string
-
 	// AllowPortFileNotExist indicates if the PortFile can not exist without an error being thrown
 	AllowPortFileNotExist bool
 
@@ -274,8 +299,6 @@ func NewPortSyncer(opts NewPortSyncerOptions) *PortSyncer {
 	return &PortSyncer{
 		logger:                opts.Logger,
 		qBittorrentClient:     opts.QBittorrentClient,
-		qBittorrentUsername:   opts.QBittorrentUsername,
-		qBittorrentPassword:   opts.QBittorrentPassword,
 		allowPortFileNotExist: opts.AllowPortFileNotExist,
 		portFile:              opts.PortFile,
 	}
@@ -319,6 +342,7 @@ func (syncer *PortSyncer) ReconcileTorrentPort(ctx context.Context, port uint16)
 }
 
 // Sync reads the port file and ensures qBittorrent is using that port for torrents
+// Will automatically login to the qBittorrent API if not authorized and re-call Sync() itself. The selfCall argument tracks if Sync() is re-calling itself so it doesn't recruse infinitely.
 // Returns a boolean indicating if the qBittorrent port had to be changed
 func (syncer *PortSyncer) Sync(ctx context.Context) (bool, error) {
 	if _, err := os.Stat(syncer.portFile); errors.Is(err, os.ErrNotExist) {
@@ -384,22 +408,32 @@ func main() {
 	log.Printf("  Refresh Interval         : %ds", cfg.RefreshIntervalSeconds)
 	log.Printf("  qBittorrent API          : %s", cfg.QBittorrentAPINetloc)
 	log.Printf("  qBittorrent Username     : %s", cfg.QBittorrentUsername)
-	log.Println("  qBittorrent Password     : Redacted")
+
+	redactedQBittorrentPW := "<READACTED>"
+	if len(cfg.QBittorrentPassword) == 0 {
+		redactedQBittorrentPW = "<EMPTY>"
+	}
+	log.Printf("  qBittorrent Password     : %s", redactedQBittorrentPW)
 
 	// Create qBittorrent client
+	qbittorrentLogger := log.Default()
+	qbittorrentLogger.SetPrefix("qbittorrent")
 	qBittorrentClient, err := NewQBittorrentClient(NewQBittorrentClientOptions{
+		Logger:          qbittorrentLogger,
 		NetworkLocation: cfg.QBittorrentAPINetloc,
+		Username:        cfg.QBittorrentUsername,
+		Password:        cfg.QBittorrentPassword,
 	})
 	if err != nil {
 		log.Fatalf("failed to create qBittorrent API client: %s", err)
 	}
 
 	// Create syncer and start
+	syncerLogger := log.Default()
+	syncerLogger.SetPrefix("port-syncer")
 	syncer := NewPortSyncer(NewPortSyncerOptions{
-		Logger:                log.Default(),
+		Logger:                syncerLogger,
 		QBittorrentClient:     qBittorrentClient,
-		QBittorrentUsername:   cfg.QBittorrentUsername,
-		QBittorrentPassword:   cfg.QBittorrentPassword,
 		AllowPortFileNotExist: cfg.AllowPortFileNotExist,
 		PortFile:              cfg.PortFile,
 	})
