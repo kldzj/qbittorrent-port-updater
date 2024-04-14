@@ -22,22 +22,22 @@ import (
 // Config is the tool's configuration, loaded from env vars
 type Config struct {
 	// PortFile is the path to the file which contains only the VPNs forwarded port
-	PortFile string `env:"PORT_FILE"`
+	PortFile string `env:"PORT_FILE,required"`
 
 	// RefreshIntervalSeconds is the number of seconds between refreshes of the port file and setting of the qBittorrent torrent port
-	RefreshIntervalSeconds int `env:"REFRESH_INTERVAL_SECONDS" envDefault:"5"`
+	RefreshIntervalSeconds int `env:"REFRESH_INTERVAL_SECONDS,required" envDefault:"5"`
 
 	// QBittorrentAPINetloc is the network location of the qBittorrent API server
-	QBittorrentAPINetloc string `env:"QBITTORRENT_API_NETLOC"`
+	QBittorrentAPINetloc string `env:"QBITTORRENT_API_NETLOC,required"`
 
 	// QBittorrentUsername is the username to use when authenticating with the QBittorrent API
-	QBittorrentUsername string `env:"QBITTORRENT_USERNAME" envDefault:"admin"`
+	QBittorrentUsername string `env:"QBITTORRENT_USERNAME,required" envDefault:"admin"`
 
 	// QBittorrrentPassword is the password to use when authenticating with the QBittorrent API
-	QBittorrentPassword string `env:"QBITTORRENT_PASSWORD"`
+	QBittorrentPassword string `env:"QBITTORRENT_PASSWORD,required"`
 
 	// AllowPortFileNotExist controls whether or not the port PortFile can not exist, if false and the PortFile does not exist then the program will error
-	AllowPortFileNotExist bool `env:"ALLOW_PORT_FILE_NOT_EXIST" envDefault:"true"`
+	AllowPortFileNotExist bool `env:"ALLOW_PORT_FILE_NOT_EXIST,required" envDefault:"true"`
 }
 
 // LoadConfig from environment vars
@@ -272,6 +272,7 @@ type NewPortSyncerOptions struct {
 // NewPortSyncer creates a new PortSyncer
 func NewPortSyncer(opts NewPortSyncerOptions) *PortSyncer {
 	return &PortSyncer{
+		logger:                opts.Logger,
 		qBittorrentClient:     opts.QBittorrentClient,
 		qBittorrentUsername:   opts.QBittorrentUsername,
 		qBittorrentPassword:   opts.QBittorrentPassword,
@@ -287,9 +288,9 @@ func (syncer *PortSyncer) GetPortFileValue() (uint16, error) {
 		return 0, fmt.Errorf("failed to read port file '%s': %s", syncer.portFile, err)
 	}
 
-	fileInt, err := strconv.ParseInt(string(fileBytes), 10, 16)
+	fileInt, err := strconv.ParseUint(string(fileBytes), 10, 16)
 	if err != nil {
-		return 0, fmt.Errorf("failed to convert port file contents '%s' into int16", err)
+		return 0, fmt.Errorf("failed to convert port file contents '%s' into int16: %s", fileBytes, err)
 	}
 
 	return uint16(fileInt), nil
@@ -326,7 +327,7 @@ func (syncer *PortSyncer) Sync(ctx context.Context) (bool, error) {
 			return false, nil
 		}
 
-		return false, fmt.Errorf("port file '%s' does not exist", syncer.portFile)
+		return false, fmt.Errorf("port file '%s' does not", syncer.portFile)
 	}
 
 	port, err := syncer.GetPortFileValue()
@@ -352,6 +353,10 @@ func (syncer *PortSyncer) Sync(ctx context.Context) (bool, error) {
 func (syncer *PortSyncer) Loop(ctx context.Context, interval time.Duration) error {
 	ticker := time.NewTicker(interval)
 
+	if _, err := syncer.Sync(ctx); err != nil {
+		return fmt.Errorf("failed to sync port: %s", err)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -367,11 +372,21 @@ func (syncer *PortSyncer) Loop(ctx context.Context, interval time.Duration) erro
 func main() {
 	ctxPair := gointerrupt.NewCtxPair(context.Background())
 
+	// Load configuration
 	cfg, err := LoadConfig()
 	if err != nil {
 		log.Fatalf("failed to load configuration: %s", err)
 	}
 
+	log.Println("loaded configuration")
+	log.Printf("  Port File                : %s", cfg.PortFile)
+	log.Printf("  Allow Port File Not Exist: %t", cfg.AllowPortFileNotExist)
+	log.Printf("  Refresh Interval         : %ds", cfg.RefreshIntervalSeconds)
+	log.Printf("  qBittorrent API          : %s", cfg.QBittorrentAPINetloc)
+	log.Printf("  qBittorrent Username     : %s", cfg.QBittorrentUsername)
+	log.Println("  qBittorrent Password     : Redacted")
+
+	// Create qBittorrent client
 	qBittorrentClient, err := NewQBittorrentClient(NewQBittorrentClientOptions{
 		NetworkLocation: cfg.QBittorrentAPINetloc,
 	})
@@ -379,19 +394,25 @@ func main() {
 		log.Fatalf("failed to create qBittorrent API client: %s", err)
 	}
 
+	// Create syncer and start
 	syncer := NewPortSyncer(NewPortSyncerOptions{
-		Logger:              log.Default(),
-		QBittorrentClient:   qBittorrentClient,
-		QBittorrentUsername: cfg.QBittorrentUsername,
-		QBittorrentPassword: cfg.QBittorrentPassword,
-		PortFile:            cfg.PortFile,
+		Logger:                log.Default(),
+		QBittorrentClient:     qBittorrentClient,
+		QBittorrentUsername:   cfg.QBittorrentUsername,
+		QBittorrentPassword:   cfg.QBittorrentPassword,
+		AllowPortFileNotExist: cfg.AllowPortFileNotExist,
+		PortFile:              cfg.PortFile,
 	})
 
 	log.Println("starting sync loop")
 
 	go func() {
-		<-ctxPair.Graceful().Done()
-		log.Println("received graceful stop signal, exitting...")
+		select {
+		case <-ctxPair.Graceful().Done():
+			log.Println("received graceful stop signal, exitting...")
+		case <-ctxPair.Harsh().Done():
+			log.Println("received harsh stop signal, exitting...")
+		}
 	}()
 
 	err = syncer.Loop(ctxPair.Graceful(), time.Duration(cfg.RefreshIntervalSeconds)*time.Second)
