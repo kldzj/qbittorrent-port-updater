@@ -2,4 +2,7 @@ module github.com/Noah-Huppert/qbittorrent-port-plugin
 
 go 1.22.2
 
-require github.com/caarlos0/env/v9 v9.0.0
+require (
+	github.com/Noah-Huppert/gointerrupt v1.0.2
+	github.com/caarlos0/env/v9 v9.0.0
+)
