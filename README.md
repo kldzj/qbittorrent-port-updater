@@ -1,9 +1,10 @@
-# qQittorrent Port Plugin
+# qBittorrent Port Updater
 Automatically sets qBittorrent's torrent port based on a status file.
 
 # Table Of Contents
 - [Overview](#overview)
 - [Configuration](#configuration)
+- [Development](#development)
 
 # Overview
 If you have a setup which runs your VPN and puts the port that is forwarded in a file then this tool will configure qBittorrent to use this port for torrenting.
@@ -17,3 +18,19 @@ Configuration values are supplied via environment variables:
 - `QBITTORRENT_PORT_PLUGIN_QBITTORRENT_USERNAME` (String, Default: `admin`): The username used to authenticate with the qBittorrent API
 - `QBITTORRENT_PORT_PLUGIN_QBITTORRENT_PASSWORD` (String, Required): The password used to authenticate with the qBittorrent API
 - `QBITTORRENT_PORT_PLUGIN_ALLOW_PORT_FILE_NOT_EXIST` (Boolean, Default: `true`): If `true` then the program will allow the port file to not exist, this is useful if your VPN takes a moment to create the file. Set to `false` to raise an error if the port file does not exist
+
+# Development
+Written in Go. Calls the qBittorrent API.
+
+To develop:
+
+1. `go mod download`
+2. Make a copy of [`dev-example.env`](./dev-example.env) named `dev.env`, fill in your own values
+3. `go run .`
+
+## Releases
+To make a new release:
+
+1. Make a new GitHub release with a semantic version tag like `v<major>.<minor>.<patch>`
+2. `docker build -t noahhuppert/qbittorrent-port-updater:<VERSION> .`
+3. `docker push noahhuppert/qbittorrent-port-updater:<VERSION>`

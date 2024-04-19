@@ -1,4 +1,4 @@
-module github.com/Noah-Huppert/qbittorrent-port-plugin
+module github.com/Noah-Huppert/qbittorrent-port-updater
 
 go 1.22.2
 
