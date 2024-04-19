@@ -5,11 +5,11 @@ COPY ./go.mod ./
 COPY ./go.sum ./
 COPY ./main.go ./
 
-RUN go build -o qbittorrent-port-plugin ./main.go 
+RUN go build -o qbittorrent-port-updater ./main.go 
 
 FROM alpine:3.19.1 AS runner
 
 WORKDIR /opt/app
-COPY --from=builder /opt/app/qbittorrent-port-plugin .
+COPY --from=builder /opt/app/qbittorrent-port-updater .
 
-ENTRYPOINT [ "/opt/app/qbittorrent-port-plugin" ]
+ENTRYPOINT [ "/opt/app/qbittorrent-port-updater" ]

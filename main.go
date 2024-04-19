@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -16,11 +15,15 @@ import (
 	"time"
 
 	"github.com/Noah-Huppert/gointerrupt"
+	"github.com/Noah-Huppert/golog"
 	"github.com/caarlos0/env/v9"
 )
 
 // Config is the tool's configuration, loaded from env vars
 type Config struct {
+	// Verbose will make debug logs show
+	Verbose bool `env:"VERBOSE" envDefault:"false"`
+
 	// PortFile is the path to the file which contains only the VPNs forwarded port
 	PortFile string `env:"PORT_FILE,required"`
 
@@ -44,7 +47,7 @@ type Config struct {
 func LoadConfig() (*Config, error) {
 	var cfg Config
 	if err := env.ParseWithOptions(&cfg, env.Options{
-		Prefix: "QBITTORRENT_PORT_PLUGIN_",
+		Prefix: "QBITTORRENT_PORT_UPDATER_",
 	}); err != nil {
 		return nil, fmt.Errorf("failed to load configuration from env vars: %s", err)
 	}
@@ -55,7 +58,7 @@ func LoadConfig() (*Config, error) {
 // QBittorrentClient is an API client for qBittorrent
 type QBittorrentClient struct {
 	// logger is used to output information
-	logger *log.Logger
+	logger golog.Logger
 
 	// baseURL is the location of the qBittorrent API location
 	baseURL url.URL
@@ -73,7 +76,7 @@ type QBittorrentClient struct {
 // NewQBittorrentClientOptions are options for creating a new QBittorrentClient
 type NewQBittorrentClientOptions struct {
 	// Logger is used to output information
-	Logger *log.Logger
+	Logger golog.Logger
 
 	// NetworkLocation is the location of the qBittorrent server
 	NetworkLocation string
@@ -133,22 +136,46 @@ func (e QBittorrentUnauthorizedError) Error() string {
 // doReq sends the provided request, if autoLogin is true also tries to automatically login if the server indicates we are not logged in.
 // Returns (response, response body, error)
 func (client *QBittorrentClient) doReq(ctx context.Context, req *http.Request, autoLogin bool) (*http.Response, []byte, error) {
-	//req.Header.Add("Referer", client.baseURL.String())
+	// Debug log request
+	client.logger.Debugf("HTTP request:")
+	client.logger.Debugf("  %s %s", req.Method, req.URL)
+	client.logger.Debugf("  Headers:")
+	for key, value := range req.Header {
+		client.logger.Debugf("    '%s': '%s'", key, value)
+	}
 
+	reqCookies := req.Cookies()
+	client.logger.Debugf("Cookies:")
+	for key, value := range reqCookies {
+		client.logger.Debugf("    '%s': '%s'", key, value)
+	}
+
+	client.logger.Debugf("  Body: '%s'", req.Body)
+
+	// Make request
 	resp, err := client.httpClient.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to make request: %s", err)
 	}
 
+	// Handle response
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return resp, nil, fmt.Errorf("failed to read response body: %s", err)
 	}
 
+	// ... Debug log response
+	client.logger.Debugf("HTTP response: %d - %s", resp.StatusCode, resp.Status)
+	client.logger.Debugf("  Headers:")
+	for key, value := range resp.Header {
+		client.logger.Debugf("    '%s': '%s'", key, value)
+	}
+	client.logger.Debugf("  Body: '%s'", respBody)
+
 	if resp.StatusCode == http.StatusForbidden {
 		// Try to automatically login and then repeat request
 		if autoLogin {
-			client.logger.Println("automatically logging in")
+			client.logger.Info("automatically logging in")
 			if err := client.Login(ctx); err != nil {
 				return resp, nil, fmt.Errorf("failed to login: %s", err)
 			}
@@ -267,7 +294,7 @@ func (client *QBittorrentClient) GetServerPreferences(ctx context.Context) (*QBi
 // PortSyncer reads the port file and sets qBittorrent's torrent port if it differs
 type PortSyncer struct {
 	// logger is used to output information
-	logger *log.Logger
+	logger golog.Logger
 
 	// qBittorrentClient is the API client used to make qBittorrent API requests
 	qBittorrentClient *QBittorrentClient
@@ -282,7 +309,7 @@ type PortSyncer struct {
 // NewPortSyncerOptions are options to create a new port syncer
 type NewPortSyncerOptions struct {
 	// Logger is used to output information
-	Logger *log.Logger
+	Logger golog.Logger
 
 	// QBittorrentClient is the API client used to make qBittorrent API requests
 	QBittorrentClient *QBittorrentClient
@@ -347,7 +374,7 @@ func (syncer *PortSyncer) ReconcileTorrentPort(ctx context.Context, port uint16)
 func (syncer *PortSyncer) Sync(ctx context.Context) (bool, error) {
 	if _, err := os.Stat(syncer.portFile); errors.Is(err, os.ErrNotExist) {
 		if syncer.allowPortFileNotExist {
-			syncer.logger.Printf("port file '%s' does not exist yet, skipping sync...", syncer.portFile)
+			syncer.logger.Infof("port file '%s' does not exist yet, skipping sync...", syncer.portFile)
 			return false, nil
 		}
 
@@ -365,9 +392,9 @@ func (syncer *PortSyncer) Sync(ctx context.Context) (bool, error) {
 	}
 
 	if changed {
-		syncer.logger.Printf("Changed qBittorrent torrent port to %d", port)
+		syncer.logger.Infof("Changed qBittorrent torrent port to %d", port)
 	} else {
-		syncer.logger.Printf("No change to qBittorrent torrent port (is: %d)", port)
+		syncer.logger.Infof("No change to qBittorrent torrent port (is: %d)", port)
 	}
 
 	return changed, nil
@@ -396,28 +423,36 @@ func (syncer *PortSyncer) Loop(ctx context.Context, interval time.Duration) erro
 func main() {
 	ctxPair := gointerrupt.NewCtxPair(context.Background())
 
+	log := golog.NewLogger("main")
+
 	// Load configuration
 	cfg, err := LoadConfig()
 	if err != nil {
 		log.Fatalf("failed to load configuration: %s", err)
 	}
 
-	log.Println("loaded configuration")
-	log.Printf("  Port File                : %s", cfg.PortFile)
-	log.Printf("  Allow Port File Not Exist: %t", cfg.AllowPortFileNotExist)
-	log.Printf("  Refresh Interval         : %ds", cfg.RefreshIntervalSeconds)
-	log.Printf("  qBittorrent API          : %s", cfg.QBittorrentAPINetloc)
-	log.Printf("  qBittorrent Username     : %s", cfg.QBittorrentUsername)
+	if cfg.Verbose {
+		log.SetLevel(golog.DebugLevel)
+	} else {
+		log.SetLevel(golog.InfoLevel)
+	}
+
+	log.Infof("loaded configuration")
+	log.Infof("  Verbose                  : %t", cfg.Verbose)
+	log.Infof("  Port File                : %s", cfg.PortFile)
+	log.Infof("  Allow Port File Not Exist: %t", cfg.AllowPortFileNotExist)
+	log.Infof("  Refresh Interval         : %ds", cfg.RefreshIntervalSeconds)
+	log.Infof("  qBittorrent API          : %s", cfg.QBittorrentAPINetloc)
+	log.Infof("  qBittorrent Username     : %s", cfg.QBittorrentUsername)
 
 	redactedQBittorrentPW := "<READACTED>"
 	if len(cfg.QBittorrentPassword) == 0 {
 		redactedQBittorrentPW = "<EMPTY>"
 	}
-	log.Printf("  qBittorrent Password     : %s", redactedQBittorrentPW)
+	log.Infof("  qBittorrent Password     : %s", redactedQBittorrentPW)
 
 	// Create qBittorrent client
-	qbittorrentLogger := log.Default()
-	qbittorrentLogger.SetPrefix("qbittorrent")
+	qbittorrentLogger := log.GetChild("qbittorrent")
 	qBittorrentClient, err := NewQBittorrentClient(NewQBittorrentClientOptions{
 		Logger:          qbittorrentLogger,
 		NetworkLocation: cfg.QBittorrentAPINetloc,
@@ -429,8 +464,7 @@ func main() {
 	}
 
 	// Create syncer and start
-	syncerLogger := log.Default()
-	syncerLogger.SetPrefix("port-syncer")
+	syncerLogger := log.GetChild("port-syncer")
 	syncer := NewPortSyncer(NewPortSyncerOptions{
 		Logger:                syncerLogger,
 		QBittorrentClient:     qBittorrentClient,
@@ -438,14 +472,14 @@ func main() {
 		PortFile:              cfg.PortFile,
 	})
 
-	log.Println("starting sync loop")
+	log.Info("starting sync loop")
 
 	go func() {
 		select {
 		case <-ctxPair.Graceful().Done():
-			log.Println("received graceful stop signal, exitting...")
+			log.Info("received graceful stop signal, exitting...")
 		case <-ctxPair.Harsh().Done():
-			log.Println("received harsh stop signal, exitting...")
+			log.Info("received harsh stop signal, exitting...")
 		}
 	}()
 
@@ -454,5 +488,5 @@ func main() {
 		log.Fatalf("failed to run sync loop: %s", err)
 	}
 
-	log.Println("done")
+	log.Info("done")
 }

@@ -1,4 +1,6 @@
 github.com/Noah-Huppert/gointerrupt v1.0.2 h1:qyXCxCZICCdXkK3qLqnoLYspxC3XIICqBms8Z9wS2po=
 github.com/Noah-Huppert/gointerrupt v1.0.2/go.mod h1:1SDp71oVnPZIwShOtxGMZbEVzWYplbr+mcvWpgLTY/0=
+github.com/Noah-Huppert/golog v1.2.1 h1:RHpkP6B/Sr/bcaHoKqNETWMYgdpZ0ULY2IlafMZ4txQ=
+github.com/Noah-Huppert/golog v1.2.1/go.mod h1:HQzjl9K51KXqqIYs6WR3DNghu2tOJqcreMblPgdgOro=
 github.com/caarlos0/env/v9 v9.0.0 h1:SI6JNsOA+y5gj9njpgybykATIylrRMklbs5ch6wO6pc=
 github.com/caarlos0/env/v9 v9.0.0/go.mod h1:ye5mlCVMYh6tZ+vCgrs/B95sj88cg5Tlnc0XIzgZ020=
