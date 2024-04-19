@@ -25,7 +25,7 @@ type Config struct {
 	PortFile string `env:"PORT_FILE,required"`
 
 	// RefreshIntervalSeconds is the number of seconds between refreshes of the port file and setting of the qBittorrent torrent port
-	RefreshIntervalSeconds int `env:"REFRESH_INTERVAL_SECONDS,required" envDefault:"5"`
+	RefreshIntervalSeconds int `env:"REFRESH_INTERVAL_SECONDS,required" envDefault:"60"`
 
 	// QBittorrentAPINetloc is the network location of the qBittorrent API server
 	QBittorrentAPINetloc string `env:"QBITTORRENT_API_NETLOC,required"`
@@ -133,7 +133,7 @@ func (e QBittorrentUnauthorizedError) Error() string {
 // doReq sends the provided request, if autoLogin is true also tries to automatically login if the server indicates we are not logged in.
 // Returns (response, response body, error)
 func (client *QBittorrentClient) doReq(ctx context.Context, req *http.Request, autoLogin bool) (*http.Response, []byte, error) {
-	req.Header.Add("Referer", client.baseURL.String())
+	//req.Header.Add("Referer", client.baseURL.String())
 
 	resp, err := client.httpClient.Do(req.WithContext(ctx))
 	if err != nil {
@@ -175,14 +175,12 @@ func (client *QBittorrentClient) Login(ctx context.Context) error {
 	reqBodyValues := url.Values{}
 	reqBodyValues.Set("username", client.username)
 	reqBodyValues.Set("password", client.password)
-	//reqBody := io.NopCloser(strings.NewReader(reqBodyValues.Encode()))
 
-	req, err := http.NewRequest("POST", reqURL.String(), nil)
+	req, err := http.NewRequest("POST", reqURL.String(), strings.NewReader(reqBodyValues.Encode()))
 	if err != nil {
 		return fmt.Errorf("failed to craft HTTP request: %s", err)
 	}
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-	req.PostForm = reqBodyValues
 
 	// Do request
 	resp, respBody, err := client.doReq(ctx, req, false)
@@ -196,7 +194,7 @@ func (client *QBittorrentClient) Login(ctx context.Context) error {
 	cookies := resp.Cookies()
 
 	if len(cookies) == 0 {
-		return fmt.Errorf("received no authentication cookie in response from the server")
+		return fmt.Errorf("received no authentication cookie in response from the server, body: %s", respBody)
 	}
 
 	client.httpClient.Jar.SetCookies(&client.baseURL, cookies)
@@ -218,16 +216,18 @@ func (client *QBittorrentClient) SetServerPreferences(ctx context.Context, prefs
 	reqURL := client.baseURL
 	reqURL.Path += "/api/v2/app/setPreferences"
 
-	reqBodyBytes, err := json.Marshal(prefs)
+	prefsJSON, err := json.Marshal(prefs)
 	if err != nil {
 		return fmt.Errorf("failed to encode server preferences as JSON: %s", err)
 	}
-	reqBody := io.NopCloser(strings.NewReader(fmt.Sprintf("json=%s", reqBodyBytes)))
+	reqBodyValues := url.Values{}
+	reqBodyValues.Set("json", string(prefsJSON))
 
-	req, err := http.NewRequest("POST", reqURL.String(), reqBody)
+	req, err := http.NewRequest("POST", reqURL.String(), strings.NewReader(reqBodyValues.Encode()))
 	if err != nil {
 		return fmt.Errorf("failed to craft HTTP request: %s", err)
 	}
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 
 	// Do request
 	_, _, err = client.doReq(ctx, req, true)
