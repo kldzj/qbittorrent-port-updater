@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qbittorrent
+  labels:
+    app: qbittorrent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qbittorrent
+  template:
+    metadata:
+      labels:
+        app: qbittorrent
+    spec:
+      containers:
+        - name: qbittorrent
+          image: linuxserver/qbittorrent:4.5.4
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: WEBUI_PORT
+              value: "8080"
+        - name: vpn
+          image: qmcgaw/gluetun:v3.38.0
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
+          ports:
+            - name: control
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: VPN_SERVICE_PROVIDER
+              value: private internet access
+            - name: SERVER_REGIONS
+              value: CA Montreal
+            - name: FIREWALL_INPUT_PORTS
+              value: "8080"
+            - name: OPENVPN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: pia-vpn-credentials
+                  key: VPN_USER
+            - name: OPENVPN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pia-vpn-credentials
+                  key: VPN_PASS
+            - name: VPN_PORT_FORWARDING
+              value: "on"
+            - name: PORT_FORWARD_ONLY
+              value: "true"
+            - name: VPN_PORT_FORWARDING_STATUS_FILE
+              value: "/mnt/vpn-port"
+          volumeMounts:
+            - name: vpn-port
+              mountPath: /mnt
+        - name: qbittorrent-port-updater
+          image: noahhuppert/qbittorrent-port-updater:v1.0.0
+          env:
+            - name: QBITTORRENT_PORT_UPDATER_PORT_FILE
+              value: "/mnt/vpn-port"
+            - name: QBITTORRENT_PORT_UPDATER_QBITTORRENT_API_NETLOC
+              value: "http://localhost:8080"
+            - name: QBITTORRENT_PORT_UPDATER_ALLOW_PORT_FILE_NOT_EXIST
+              value: "true"
+            - name: QBITTORRENT_PORT_UPDATER_QBITTORRENT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: qbittorrent-port-updater
+                  key: QBITTORRENT_PORT_UPDATER_QBITTORRENT_PASSWORD
+          volumeMounts:
+            - name: vpn-port
+              mountPath: /mnt
+      volumes:
+        - name: vpn-port
+          emptyDir: {}

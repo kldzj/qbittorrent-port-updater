@@ -3,13 +3,20 @@ Automatically sets qBittorrent's torrent port based on a status file.
 
 # Table Of Contents
 - [Overview](#overview)
-- [Configuration](#configuration)
+- [Usage](#usage)
 - [Development](#development)
 
 # Overview
 If you have a setup which runs your VPN and puts the port that is forwarded in a file then this tool will configure qBittorrent to use this port for torrenting.
 
-# Configuration
+# Usage
+The [`noahhuppert/qbittorrent-port-updater`](https://hub.docker.com/repository/docker/noahhuppert/qbittorrent-port-updater/general) Docker image is provided for each release. Environment variables are used for configuration, see the [Configuration section](#configuration).
+
+Run the container so that it has access to a directory with a file containing the port which is forwarded. This file will be checked periodically by the program.
+
+See [`examples/`](./examples/) for common container deployment tool examples.
+
+## Configuration
 Configuration values are supplied via environment variables:
 
 - `QBITTORRENT_PORT_UPDATER_PORT_FILE` (String, Required): Path to file which contains only the VPNs forwarded port

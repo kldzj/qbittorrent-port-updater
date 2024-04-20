@@ -1,0 +1,31 @@
+services:
+  qbittorrent:
+    image: linuxserver/qbittorrent:4.5.4
+    ports:
+      - "8080:8080"
+  vpn:
+    image: qmcgaw/gluetun:v3.38.0
+    ports:
+      - "8000:8000"
+    environment:
+      - VPN_SERVICE_PROVIDER="private internet access"
+      - SERVER_REGIONS="CA Montreal"
+      - FIREWALL_INPUT_PORTS=8080
+      - OPENVPN_USER="pia username"
+      - OPENVPN_PASSWORD="pia password"
+      - VPN_PORT_FORWARDING=on
+      - PORT_FORWARD_ONLY=true
+      - VPN_PORT_FORWARDING_STATUS_FILE=/mnt/vpn-port
+    volumes:
+      - "vpn_port:/mnt"
+  qbittorrent_port_updater:
+    image: noahhuppert/qbittorrent-port-updater:v1.0.0
+    environment:
+      - QBITTORRENT_PORT_UPDATER_PORT_FILE=/mnt/vpn-port
+      - QBITTORRENT_PORT_UPDATER_QBITTORRENT_API_NETLOC="http://localhost:8080"
+      - QBITTORRENT_PORT_UPDATER_ALLOW_PORT_FILE_NOT_EXIST=true
+      - QBITTORRENT_PORT_UPDATER_QBITTORRENT_PASSWORD="qbittorrent password"
+    volumes:
+      - "vpn_port:/mnt"
+volumes:
+  vpn_port: {}
